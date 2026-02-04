@@ -49,7 +49,6 @@ def convert_to_eur(price_gbp):
         rate = response.json()["rates"]["EUR"]
         return round(price_gbp * rate, 2)
     except:
-        # fallback: 1 GBP = 1.17 EUR
         return round(price_gbp * 1.17, 2)
 
 # ---------- Flask route ----------
@@ -63,7 +62,7 @@ def index():
         game = request.form.get("game")
         console = request.form.get("console")
         cex_price_str = request.form.get("cex_price")
-        marketplace = request.form.get("marketplace") or "EBAY-IE"
+        marketplaces = request.form.getlist("marketplace") or ["EBAY-IE"]
         include_loose = "loose" in request.form
         include_cib = "cib" in request.form
         ignore_sealed = "ignore_sealed" in request.form
@@ -78,8 +77,11 @@ def index():
         try:
             token = get_access_token()
             query = f"{game} {console}"
-            results = search_sold_items(token, query, marketplace)
-            items = results.get("itemSummaries", [])
+            all_items = []
+            for marketplace in marketplaces:
+                results = search_sold_items(token, query, marketplace)
+                all_items.extend(results.get("itemSummaries", []))
+            items = all_items
         except Exception as e:
             return render_template("index.html", output=f"Error accessing eBay:\n{e}", recommendation="", color="black")
 
