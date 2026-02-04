@@ -5,13 +5,25 @@
     <title>CEX ↔ eBay Checker</title>
     <style>
         body { font-family: Arial; padding: 10px; background: #f4f4f4; }
-        input, select, button, textarea { width: 100%; margin-bottom: 10px; padding: 8px; font-size: 16px; }
-        textarea { height: 300px; }
+        input, select, button { width: 100%; margin-bottom: 10px; padding: 10px; font-size: 16px; }
         .reco { font-size: 22px; font-weight: bold; margin-bottom: 10px; }
         .green { color: green; }
         .red { color: red; }
         .black { color: black; }
-        a { color: blue; text-decoration: underline; }
+        .listing-button {
+            display: block;
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 5px;
+            font-size: 16px;
+            text-align: left;
+            background: #fff;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            text-decoration: none;
+            color: black;
+        }
+        .listing-button:hover { background: #e0e0e0; }
     </style>
 </head>
 <body>
@@ -44,8 +56,13 @@
     {% endif %}
 
     {% if output %}
-        <h3>Top Listings:</h3>
-        <textarea readonly>{{ output }}</textarea>
+        <h3>Top 5 recent sold listings:</h3>
+        {% for line in output.split('\n')[7:] %} {# skip summary lines, show listings #}
+            {% if line.strip() %}
+                {% set parts = line.split(' → ') %}
+                <a href="{{ parts[2] }}" target="_blank" class="listing-button">{{ parts[0] }} → {{ parts[1] }}</a>
+            {% endif %}
+        {% endfor %}
     {% endif %}
 </body>
 </html>
