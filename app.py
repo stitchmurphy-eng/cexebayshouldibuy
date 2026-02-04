@@ -45,8 +45,7 @@ def convert_to_eur(price_gbp):
         rate = response.json()["rates"]["EUR"]
         return round(price_gbp * rate, 2)
     except Exception:
-        # fallback: assume 1:1 if exchange fails
-        return round(price_gbp, 2)
+        return round(price_gbp, 2)  # fallback if exchange fails
 
 # ---------- Main Route ----------
 @app.route("/", methods=["GET", "POST"])
@@ -57,19 +56,43 @@ def index():
     count = avg = med = cex_price = 0
     top_items = []
 
+    # Default form values
+    form_values = {
+        "game": "",
+        "console": "",
+        "cex_price": "",
+        "marketplaces": ["EBAY-IE"],
+        "include_loose": False,
+        "include_cib": False,
+        "ignore_sealed": False
+    }
+
     if request.method == "POST":
-        game = request.form.get("game")
-        console = request.form.get("console")
-        cex_price_str = request.form.get("cex_price")
+        game = request.form.get("game", "").strip()
+        console = request.form.get("console", "").strip()
+        cex_price_str = request.form.get("cex_price", "").strip()
         marketplaces = request.form.getlist("marketplace") or ["EBAY-IE"]
         include_loose = "loose" in request.form
         include_cib = "cib" in request.form
         ignore_sealed = "ignore_sealed" in request.form
 
+        # Save form values to redisplay
+        form_values.update({
+            "game": game,
+            "console": console,
+            "cex_price": cex_price_str,
+            "marketplaces": marketplaces,
+            "include_loose": include_loose,
+            "include_cib": include_cib,
+            "ignore_sealed": ignore_sealed
+        })
+
+        # Validate CEX price
         try:
             cex_price = float(cex_price_str)
         except ValueError:
-            return render_template("index.html", output="Invalid CEX price.", recommendation="", color="black")
+            output = "Invalid CEX price."
+            return render_template("index.html", output=output, recommendation="", color="black", top_items=[], **form_values)
 
         # --- Search eBay ---
         try:
@@ -81,7 +104,8 @@ def index():
                 all_items.extend(results.get("itemSummaries", []))
             items = all_items
         except Exception as e:
-            return render_template("index.html", output=f"Error accessing eBay:\n{e}", recommendation="", color="black")
+            output = f"Error accessing eBay:\n{e}"
+            return render_template("index.html", output=output, recommendation="", color="black", top_items=[], **form_values)
 
         # --- Filter items ---
         filtered = []
@@ -92,6 +116,13 @@ def index():
             if ignore_sealed and "sealed" in title: continue
             if any(junk in title for junk in JUNK_KEYWORDS): continue
             filtered.append(item)
+
+        # Debug: if nothing matched
+        if not filtered:
+            output = f"No items found matching your filters for '{query}' on {', '.join(marketplaces)}."
+            top_items = []
+        else:
+            output = f"Searched: '{query}' on {', '.join(marketplaces)}"
 
         # --- Stats ---
         prices = [float(item["price"]["value"]) for item in filtered]
@@ -118,7 +149,7 @@ def index():
             TopItem(
                 title=item["title"],
                 price=convert_to_eur(float(item["price"]["value"])),
-                link=item["itemWebUrl"]
+                link=item.get("itemWebUrl", "#")
             )
             for item in filtered[:5]
         ]
@@ -131,7 +162,8 @@ def index():
                            avg=avg,
                            med=med,
                            cex_price=cex_price,
-                           top_items=top_items)
+                           top_items=top_items,
+                           **form_values)
 
 # ---------- Run ----------
 if __name__ == "__main__":
