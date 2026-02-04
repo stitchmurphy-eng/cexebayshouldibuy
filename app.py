@@ -16,32 +16,36 @@ JUNK_KEYWORDS = ["guide", "manual", "see description", "box only", "repro", "pos
 
 # ---------- eBay OAuth ----------
 def get_access_token():
-    auth = (EBAY_CLIENT_ID, EBAY_CLIENT_SECRET)
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    data = {"grant_type": "client_credentials", "scope": "https://api.ebay.com/oauth/api_scope"}
-    response = requests.post(EBAY_AUTH_URL, headers=headers, data=data, auth=auth)
-    response.raise_for_status()
-    return response.json()["access_token"]
+    if not EBAY_CLIENT_ID or not EBAY_CLIENT_SECRET:
+        raise RuntimeError("EBAY_CLIENT_ID or EBAY_CLIENT_SECRET not set in environment")
+    try:
+        auth = (EBAY_CLIENT_ID, EBAY_CLIENT_SECRET)
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        data = {"grant_type": "client_credentials", "scope": "https://api.ebay.com/oauth/api_scope"}
+        response = requests.post(EBAY_AUTH_URL, headers=headers, data=data, auth=auth, timeout=10)
+        response.raise_for_status()
+        return response.json()["access_token"]
+    except requests.RequestException as e:
+        raise RuntimeError(f"Failed to get eBay access token: {e}")
 
 # ---------- Search sold items ----------
 def search_sold_items(token, query, marketplace="EBAY-IE"):
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "X-EBAY-C-MARKETPLACE-ID": marketplace,
-    }
-    params = {
-        "q": query,
-        "limit": 50,
-        "filter": "soldItemsOnly:true"
-    }
-    response = requests.get(BROWSE_API_URL, headers=headers, params=params)
-    response.raise_for_status()
-    return response.json()
+    try:
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-EBAY-C-MARKETPLACE-ID": marketplace,
+        }
+        params = {"q": query, "limit": 50, "filter": "soldItemsOnly:true"}
+        response = requests.get(BROWSE_API_URL, headers=headers, params=params, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as e:
+        raise RuntimeError(f"Failed to search eBay: {e}")
 
 # ---------- Convert GBP to EUR ----------
 def convert_to_eur(price_gbp):
     try:
-        response = requests.get("https://api.exchangerate.host/latest?base=GBP&symbols=EUR")
+        response = requests.get("https://api.exchangerate.host/latest?base=GBP&symbols=EUR", timeout=5)
         rate = response.json()["rates"]["EUR"]
         return round(price_gbp * rate, 2)
     except Exception:
@@ -56,7 +60,6 @@ def index():
     count = avg = med = cex_price = 0
     top_items = []
 
-    # Default form values
     form_values = {
         "game": "",
         "console": "",
@@ -68,6 +71,7 @@ def index():
     }
 
     if request.method == "POST":
+        # --- Get form data ---
         game = request.form.get("game", "").strip()
         console = request.form.get("console", "").strip()
         cex_price_str = request.form.get("cex_price", "").strip()
@@ -76,7 +80,6 @@ def index():
         include_cib = "cib" in request.form
         ignore_sealed = "ignore_sealed" in request.form
 
-        # Save form values to redisplay
         form_values.update({
             "game": game,
             "console": console,
@@ -87,29 +90,36 @@ def index():
             "ignore_sealed": ignore_sealed
         })
 
-        # Validate CEX price
+        # --- Validate CEX price ---
         try:
             cex_price = float(cex_price_str)
         except ValueError:
             output = "Invalid CEX price."
             return render_template("index.html", output=output, recommendation="", color="black", top_items=[], **form_values)
 
-        # --- Search eBay ---
+        # --- Get eBay token ---
         try:
             token = get_access_token()
-            query = f"{game} {console}"
-            all_items = []
-            for marketplace in marketplaces:
-                results = search_sold_items(token, query, marketplace)
+        except RuntimeError as e:
+            output = str(e)
+            return render_template("index.html", output=output, recommendation="", color="black", top_items=[], **form_values)
+
+        # --- Search all marketplaces ---
+        all_items = []
+        for marketplace in marketplaces:
+            try:
+                results = search_sold_items(token, f"{game} {console}", marketplace)
                 all_items.extend(results.get("itemSummaries", []))
-            items = all_items
-        except Exception as e:
-            output = f"Error accessing eBay:\n{e}"
+            except RuntimeError as e:
+                output += f"Error in marketplace {marketplace}: {e}\n"
+
+        if not all_items:
+            output += "No items found."
             return render_template("index.html", output=output, recommendation="", color="black", top_items=[], **form_values)
 
         # --- Filter items ---
         filtered = []
-        for item in items:
+        for item in all_items:
             title = item["title"].lower()
             if not include_cib and "cib" in title: continue
             if not include_loose and "loose" in title: continue
@@ -117,12 +127,10 @@ def index():
             if any(junk in title for junk in JUNK_KEYWORDS): continue
             filtered.append(item)
 
-        # Debug: if nothing matched
         if not filtered:
-            output = f"No items found matching your filters for '{query}' on {', '.join(marketplaces)}."
-            top_items = []
+            output += "No items matched your filters."
         else:
-            output = f"Searched: '{query}' on {', '.join(marketplaces)}"
+            output += f"Searched '{game} {console}' on {', '.join(marketplaces)}"
 
         # --- Stats ---
         prices = [float(item["price"]["value"]) for item in filtered]
