@@ -105,7 +105,7 @@ layout = [
     [sg.Text("Game Name"), sg.Input(key="-GAME-")],
     [sg.Text("Console"), sg.Input(key="-CONSOLE-")],
     [sg.Text("CEX Price (€)"), sg.Input(key="-CEX-")],
-    [sg.Text("Marketplace"), sg.Combo(["EBAY-IE", "EBAY-DE"], default_value="EBAY-IE", key="-MARKET-")],
+    [sg.Text("Marketplace"), sg.Combo(["EBAY-IE", "EBAY-DE", "EBAY-UK"], default_value="EBAY-IE", key="-MARKET-")],
     [sg.Checkbox("Include Loose", default=True, key="-LOOSE-"),
      sg.Checkbox("Include CIB", default=True, key="-CIB-"),
      sg.Checkbox("Ignore Sealed", default=True, key="-IGNORESEALED-")],
@@ -188,3 +188,4 @@ while True:
             window["-RECO-"].update("Recommendation: N/A", text_color="black")
 
 window.close()
+
