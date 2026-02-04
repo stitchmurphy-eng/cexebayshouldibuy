@@ -2,27 +2,23 @@ from flask import Flask, render_template, request
 import requests
 import statistics
 import os
+from collections import namedtuple
 
+# ---------- Flask App ----------
 app = Flask(__name__)
 
-# ---------------- eBay OAuth ---------------- #
+# ---------- eBay Configuration ----------
 EBAY_CLIENT_ID = os.environ.get("EBAY_CLIENT_ID")
 EBAY_CLIENT_SECRET = os.environ.get("EBAY_CLIENT_SECRET")
-EBAY_AUTH_URL = os.environ.get("EBAY_AUTH_URL")
-
+EBAY_AUTH_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 BROWSE_API_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+JUNK_KEYWORDS = ["guide", "manual", "see description", "box only", "repro", "poster", "strategy", "pristine"]
 
-JUNK_KEYWORDS = [
-    "guide", "manual", "see description", "box only",
-    "repro", "poster", "strategy", "pristine"
-]
-
-# ---------- Get eBay access token ----------
+# ---------- eBay OAuth ----------
 def get_access_token():
     auth = (EBAY_CLIENT_ID, EBAY_CLIENT_SECRET)
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    data = {"grant_type": "client_credentials",
-            "scope": "https://api.ebay.com/oauth/api_scope"}
+    data = {"grant_type": "client_credentials", "scope": "https://api.ebay.com/oauth/api_scope"}
     response = requests.post(EBAY_AUTH_URL, headers=headers, data=data, auth=auth)
     response.raise_for_status()
     return response.json()["access_token"]
@@ -42,21 +38,24 @@ def search_sold_items(token, query, marketplace="EBAY-IE"):
     response.raise_for_status()
     return response.json()
 
-# ---------- Convert GBP → EUR ----------
+# ---------- Convert GBP to EUR ----------
 def convert_to_eur(price_gbp):
     try:
         response = requests.get("https://api.exchangerate.host/latest?base=GBP&symbols=EUR")
         rate = response.json()["rates"]["EUR"]
         return round(price_gbp * rate, 2)
-    except:
-        return round(price_gbp * 1.17, 2)
+    except Exception:
+        # fallback: assume 1:1 if exchange fails
+        return round(price_gbp, 2)
 
-# ---------- Flask route ----------
+# ---------- Main Route ----------
 @app.route("/", methods=["GET", "POST"])
 def index():
     output = ""
     recommendation = ""
     color = "black"
+    count = avg = med = cex_price = 0
+    top_items = []
 
     if request.method == "POST":
         game = request.form.get("game")
@@ -67,13 +66,12 @@ def index():
         include_cib = "cib" in request.form
         ignore_sealed = "ignore_sealed" in request.form
 
-        # Validate CEX price
         try:
             cex_price = float(cex_price_str)
         except ValueError:
             return render_template("index.html", output="Invalid CEX price.", recommendation="", color="black")
 
-        # Get eBay data
+        # --- Search eBay ---
         try:
             token = get_access_token()
             query = f"{game} {console}"
@@ -85,7 +83,7 @@ def index():
         except Exception as e:
             return render_template("index.html", output=f"Error accessing eBay:\n{e}", recommendation="", color="black")
 
-        # Filter items
+        # --- Filter items ---
         filtered = []
         for item in items:
             title = item["title"].lower()
@@ -95,40 +93,47 @@ def index():
             if any(junk in title for junk in JUNK_KEYWORDS): continue
             filtered.append(item)
 
-        # Calculate stats
+        # --- Stats ---
         prices = [float(item["price"]["value"]) for item in filtered]
+        count = len(prices)
         if prices:
             avg_gbp = round(sum(prices)/len(prices), 2)
             med_gbp = round(statistics.median(prices), 2)
-            avg_eur = convert_to_eur(avg_gbp)
-            med_eur = convert_to_eur(med_gbp)
+            avg = convert_to_eur(avg_gbp)
+            med = convert_to_eur(med_gbp)
         else:
-            avg_gbp = med_gbp = avg_eur = med_eur = 0
+            avg = med = 0
 
-        # Recommendation
-        if med_eur > cex_price * 1.2:
+        # --- Recommendation ---
+        if med > cex_price * 1.2:
             recommendation = "BUY ✅"
             color = "green"
         else:
             recommendation = "SKIP ❌"
             color = "red"
 
-        # Prepare output
-        output += f"Items found: {len(filtered)}\n"
-        output += f"Average Sold Price: €{avg_eur}\n"
-        output += f"Median Sold Price: €{med_eur}\n"
-        output += f"CEX Price: €{cex_price}\nRecommendation: {recommendation}\n\n"
+        # --- Top 5 listings ---
+        TopItem = namedtuple("TopItem", ["title", "price", "link"])
+        top_items = [
+            TopItem(
+                title=item["title"],
+                price=convert_to_eur(float(item["price"]["value"])),
+                link=item["itemWebUrl"]
+            )
+            for item in filtered[:5]
+        ]
 
-        output += "Top 5 recent sold listings:\n"
-        for item in filtered[:5]:
-            title = item["title"]
-            price_eur = convert_to_eur(float(item["price"]["value"]))
-            link = item["itemWebUrl"]
-            output += f"{title} → €{price_eur} → {link}\n"
+    return render_template("index.html",
+                           output=output,
+                           recommendation=recommendation,
+                           color=color,
+                           count=count,
+                           avg=avg,
+                           med=med,
+                           cex_price=cex_price,
+                           top_items=top_items)
 
-    return render_template("index.html", output=output, recommendation=recommendation, color=color)
-
-# ---------- Run app ----------
+# ---------- Run ----------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
