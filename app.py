@@ -16,44 +16,36 @@ JUNK_KEYWORDS = ["guide", "manual", "see description", "box only", "repro", "pos
 
 # ---------- eBay OAuth ----------
 def get_access_token():
-    try:
-        if not EBAY_CLIENT_ID or not EBAY_CLIENT_SECRET:
-            raise ValueError("eBay credentials not set.")
-        auth = (EBAY_CLIENT_ID, EBAY_CLIENT_SECRET)
-        headers = {"Content-Type": "application/x-www-form-urlencoded"}
-        data = {"grant_type": "client_credentials", "scope": "https://api.ebay.com/oauth/api_scope"}
-        response = requests.post(EBAY_AUTH_URL, headers=headers, data=data, auth=auth, timeout=10)
-        response.raise_for_status()
-        return response.json()["access_token"]
-    except Exception as e:
-        raise RuntimeError(f"Failed to get eBay access token: {e}")
+    auth = (EBAY_CLIENT_ID, EBAY_CLIENT_SECRET)
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    data = {"grant_type": "client_credentials", "scope": "https://api.ebay.com/oauth/api_scope"}
+    response = requests.post(EBAY_AUTH_URL, headers=headers, data=data, auth=auth)
+    response.raise_for_status()
+    return response.json()["access_token"]
 
 # ---------- Search sold items ----------
 def search_sold_items(token, query, marketplace="EBAY-IE"):
-    try:
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "X-EBAY-C-MARKETPLACE-ID": marketplace,
-        }
-        params = {
-            "q": query,
-            "limit": 50,
-            "filter": "soldItemsOnly:true"
-        }
-        response = requests.get(BROWSE_API_URL, headers=headers, params=params, timeout=10)
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        raise RuntimeError(f"Failed to search eBay items: {e}")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-EBAY-C-MARKETPLACE-ID": marketplace,
+    }
+    params = {
+        "q": query,
+        "limit": 50,
+        "filter": "soldItemsOnly:true"
+    }
+    response = requests.get(BROWSE_API_URL, headers=headers, params=params)
+    response.raise_for_status()
+    return response.json()
 
 # ---------- Convert GBP to EUR ----------
 def convert_to_eur(price_gbp):
     try:
-        response = requests.get("https://api.exchangerate.host/latest?base=GBP&symbols=EUR", timeout=5)
-        rate = response.json().get("rates", {}).get("EUR", 1)
+        response = requests.get("https://api.exchangerate.host/latest?base=GBP&symbols=EUR")
+        rate = response.json()["rates"]["EUR"]
         return round(price_gbp * rate, 2)
     except Exception:
-        # fallback: 1:1 if exchange fails
+        # fallback: assume 1:1 if exchange fails
         return round(price_gbp, 2)
 
 # ---------- Main Route ----------
@@ -66,45 +58,36 @@ def index():
     top_items = []
 
     if request.method == "POST":
-        game = request.form.get("game", "").strip()
-        console = request.form.get("console", "").strip()
-        cex_price_str = request.form.get("cex_price", "").strip()
+        game = request.form.get("game")
+        console = request.form.get("console")
+        cex_price_str = request.form.get("cex_price")
         marketplaces = request.form.getlist("marketplace") or ["EBAY-IE"]
         include_loose = "loose" in request.form
         include_cib = "cib" in request.form
         ignore_sealed = "ignore_sealed" in request.form
 
-        if not game or not console or not cex_price_str:
-            output = "Please fill in all fields."
-            return render_template("index.html", output=output, recommendation=recommendation, color=color, count=count, avg=avg, med=med, cex_price=cex_price, top_items=top_items)
-
-        # Validate CEX price
         try:
             cex_price = float(cex_price_str)
         except ValueError:
-            output = "Invalid CEX price. Must be a number."
-            return render_template("index.html", output=output, recommendation=recommendation, color=color, count=count, avg=avg, med=med, cex_price=cex_price, top_items=top_items)
-
-        # --- Get eBay token ---
-        try:
-            token = get_access_token()
-        except Exception as e:
-            output = f"Error getting eBay token:\n{e}"
-            return render_template("index.html", output=output, recommendation=recommendation, color=color, count=count, avg=avg, med=med, cex_price=cex_price, top_items=top_items)
+            return render_template("index.html", output="Invalid CEX price.", recommendation="", color="black",
+                                   count=0, avg=0, med=0, cex_price=0, top_items=[])
 
         # --- Search eBay ---
-        all_items = []
-        query = f"{game} {console}"
-        for marketplace in marketplaces:
-            try:
+        try:
+            token = get_access_token()
+            query = f"{game} {console}"
+            all_items = []
+            for marketplace in marketplaces:
                 results = search_sold_items(token, query, marketplace)
                 all_items.extend(results.get("itemSummaries", []))
-            except Exception as e:
-                output += f"Error searching {marketplace}: {e}\n"
+            items = all_items
+        except Exception as e:
+            return render_template("index.html", output=f"Error accessing eBay:\n{e}", recommendation="", color="black",
+                                   count=0, avg=0, med=0, cex_price=cex_price, top_items=[])
 
         # --- Filter items ---
         filtered = []
-        for item in all_items:
+        for item in items:
             title = item.get("title", "").lower()
             if not include_cib and "cib" in title: continue
             if not include_loose and "loose" in title: continue
@@ -113,7 +96,13 @@ def index():
             filtered.append(item)
 
         # --- Stats ---
-        prices = [float(item["price"]["value"]) for item in filtered]
+        prices = []
+        for item in filtered:
+            try:
+                prices.append(float(item["price"]["value"]))
+            except (KeyError, ValueError):
+                continue
+
         count = len(prices)
         if prices:
             avg_gbp = round(sum(prices)/len(prices), 2)
@@ -123,6 +112,21 @@ def index():
         else:
             avg = med = 0
 
+        # --- Top 5 listings ---
+        TopItem = namedtuple("TopItem", ["title", "price", "link"])
+        top_items = []
+        for item in filtered[:5]:
+            try:
+                top_items.append(
+                    TopItem(
+                        title=item.get("title", "N/A"),
+                        price=convert_to_eur(float(item["price"]["value"])),
+                        link=item.get("itemWebUrl", "#")
+                    )
+                )
+            except Exception:
+                continue
+
         # --- Recommendation ---
         if med > cex_price * 1.2:
             recommendation = "BUY ✅"
@@ -131,20 +135,8 @@ def index():
             recommendation = "SKIP ❌"
             color = "red"
 
-        # --- Top 5 listings ---
-        TopItem = namedtuple("TopItem", ["title", "price", "link"])
-        top_items = []
-        for item in filtered[:5]:
-            try:
-                top_items.append(
-                    TopItem(
-                        title=item.get("title","N/A"),
-                        price=convert_to_eur(float(item["price"]["value"])),
-                        link=item.get("itemWebUrl","#")
-                    )
-                )
-            except Exception:
-                continue
+        # --- Output for debugging if needed ---
+        output = f"Items checked: {count}, Average: €{avg}, Median: €{med}, CEX Price: €{cex_price}"
 
     return render_template("index.html",
                            output=output,
